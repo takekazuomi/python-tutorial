@@ -1,0 +1,5 @@
+$env ="myenv"
+$host.ui.RawUI.WindowTitle = $env
+use python miniconda -ErrorAction SilentlyContinue
+activate $env
+

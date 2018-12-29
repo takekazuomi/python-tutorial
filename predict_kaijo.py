@@ -184,22 +184,23 @@ class Predict:
             and kaijcd in ({','.join(list(map(str, kaijcd)))})
             and haskekka = 1 and chaku is not null'''
 
-        kyotei = self.read_sql(sql, 'kyotei')
+        data = self.read_sql(sql, 'kyotei')
 
-        return kyotei
+        return data
 
-    def get_data_from_unfinished(self):
+    def get_data_from_unfinished(self, kaijcd):
         # 結果の出てないデータを読む。取り消しレースも含む
         y = (datetime.utcnow() + timedelta(hours=9-24)).strftime('%Y-%m-%d')
 
         sql = f'''
         select {self.__columns} from features3
             where kaiymd >= '{y}'
+            and kaijcd in ({','.join(list(map(str, kaijcd)))})
             and haskekka = 0'''
 
-        kyotei = self.read_sql(sql, 'kyotei_'+y)
+        data = self.read_sql(sql, 'kyotei_'+y)
 
-        return kyotei
+        return data
 
     def write_predict_result(self, df, pred, modelid):
         # 予想結果をdbに書く
@@ -319,7 +320,7 @@ def get_args():
     parser.add_argument('-k', '--kaijcd', help='kaijo code. camma sep.', action='store', dest="kaijcd", default="all", type=str)
     parser.add_argument('-t', '--table', help='predict table name', action='store', dest="predict_table", default="predict", type=str)
     parser.add_argument('-m', '--model', help='make model', action='store_true')
-    parser.add_argument('-v', '--verify', help='verify predict used by after Dec. 1', action='store', dest='predict11', type=str)
+    parser.add_argument('-v', '--verify', help='verify predict used by after Dec. 1', action='store', dest='verification', type=str)
     parser.add_argument('-o', '--oracle', help='make oracle', action='store', dest='oracle', type=str)
     parser.add_argument('-w', '--writedb', help='write predict to database', action='store_true')
 
@@ -361,6 +362,91 @@ def validator(predict, kaijcd, models, date_range, writedb):
         print("kaijcd:", str(kc), "modelid:", modelid, "RMSE:", str(rmse), file=sys.stderr,flush=True)
         yield o
 
+def oracular(predict, kaijcd, models, writedb):
+    # モデルがトレーニングされた会場に合わせて予想対象を切り替えて、モデル毎に予想する。
+    for m in models:
+        # コマンドラインで指定されていたら会場コードはそれを使う。それ以外は、モデルがトレーニングされたときのデータか、全会場を使う。
+        # TODO 要改善
+        kc = kaijcd if len(kaijcd) > 0 else m['kaijcd']
+
+        # 近々の結果が無いレースデータを読む
+        data = predict.get_data_from_unfinished(kc)
+
+        # カテゴリの数値合わせなど特徴量の調整をする
+        df = predict.fix_features(data)
+
+        # 説明変数を取得
+        X = predict.get_futures(df)
+
+        # 予想する
+        pred = predict.predict(m['model'], X)
+
+        modelid = predict.get_modelid(m['model_path'])
+
+        # writedbフラグを見て、DBに結果を書く
+        if(writedb):
+            predict.write_predict_result(data, pred, modelid)
+
+        o = {'KaijCd':kc, 'ModelId':m['model_path'], 'GroupId':str(predict.groupid), 'RMSE':rmse}
+
+        print("kaijcd:", str(kc), "modelid:", modelid, "RMSE:", str(rmse), file=sys.stderr,flush=True)
+        yield o
+
+def model(predict, date_range, kaijcd, json):
+        date_range = ['2011-11-01','2018-11-01']
+
+        # 学習データからmodelを作る
+        data = predict.get_data_from_finished(date_range, kaijcd)
+
+        df = predict.fix_features(data)
+
+        model, X, y, model_path = predict.train(df)
+
+        # 自分自身と突き合わせる
+        pred = predict.predict(model, X)
+        rmse = predict.rmse(y, pred)
+
+        # 特徴量の重みをplot
+        png_path = predict.plot_feature_importances(X, model, predict.get_modelid(model_path))
+
+        if json:
+            o = {'KaijCd':kaijcd, 'StartDate':date_range[0],'EndDate':date_range[1],'ModelPath':model_path, 'RMSE':rmse, 'feature_importances_png':png_path}
+            print(json.dumps(o, indent = 2))
+        else:
+            print("kaijcd:     " + str(kaijcd))
+            print("date range: " + str(date_range))
+            print("rmse:       " + str(rmse))
+            print("model path: " + model_path)
+            print("feature importances png: " + png_path)
+
+
+def verification(predict, date_range, model_path, writedb, json):
+    models = predict.get_model(model_path)
+
+    o = list(validator(predict, kaijcd, models, date_range, writedb))
+
+    if json:
+        print(json.dumps(o, indent = 2))
+    else:
+        for i in o:
+            print("kaijcd:     " + str(i['KaijCd']))
+            print("date range: " + str([i['StartDate'],i['EndDate']]))
+            print("rmse:       " + str(i['RMSE']))
+            print("model path: " + i['ModelPath'])
+
+def oracle(predict, model_path, writedb, json):
+        models = predict.get_model(model_path)
+
+        o = list(oracular(predict, kaijcd, models, writedb))
+
+        if json:
+            print(json.dumps(o, indent = 2))
+        else:
+            for i in o:
+                print("kaijcd:     " + str(i['KaijCd']))
+                print("rmse:       " + str(i['RMSE']))
+                print("model path: " + i['ModelPath'])
+
 def main():
     args = get_args()
 
@@ -375,70 +461,23 @@ def main():
         kaijcd = list(map(int, args.kaijcd.split(',')))
 
     if(args.model):
+        # model を作る
         date_range = ['2011-11-01','2018-11-01']
+        model(predict, date_range, kaijcd, args.json)
 
-        # 学習データからmodelを作る
-        kyotei_data = predict.get_data_from_finished(date_range, kaijcd)
-
-        df = predict.fix_features(kyotei_data)
-
-        model, X, y, model_path = predict.train(df)
-
-        # 自分自身と突き合わせる
-        pred = predict.predict(model, X)
-        rmse = predict.rmse(y, pred)
-
-        # 特徴量の重みをplot
-        png_path = predict.plot_feature_importances(X, model, predict.get_modelid(model_path))
-
-        if args.json:
-            o = {'KaijCd':kaijcd, 'StartDate':date_range[0],'EndDate':date_range[1],'ModelPath':model_path, 'RMSE':rmse, 'feature_importances_png':png_path}
-            print(json.dumps(o, indent = 2))
-        else:
-            print("kaijcd:     " + str(kaijcd))
-            print("date range: " + str(date_range))
-            print("rmse:       " + str(rmse))
-            print("model path: " + model_path)
-            print("feature importances png: " + png_path)
-
-    if(args.predict11):
+    if(args.verification):
         # 除外したデータを予想する
         # model はファイルから戻す
 
         date_range = ['2018-11-01','2030-01-01']
 
-        model_path = args.predict11
-
-        models = predict.get_model(model_path)
-
-        o = list(validator(predict, kaijcd, models, date_range, args.writedb))
-        if args.json:
-            print(json.dumps(o, indent = 2))
-        else:
-            for i in o:
-                print("kaijcd:     " + str(i['KaijCd']))
-                print("date range: " + str([i['StartDate'],i['EndDate']]))
-                print("rmse:       " + str(i['RMSE']))
-                print("model path: " + i['ModelPath'])
+        verification(predict, date_range, args.verification, args.writedb, args.json):
 
     if(args.oracle):
         # 結果の出てないレースを予想する
         # model はファイルから戻す
-        model_path = args.oracle
 
-        model = predict.get_model(model_path)
-
-        kyotei_data = predict.get_data_from_unfinished()
-
-        df = predict.fix_features(kyotei_data)
-
-        X = predict.get_futures(df)
-        pred = predict.predict(model, X)
-
-        print("model path: " + model_path)
-
-        if(args.writedb):
-            predict.write_predict_result(kyotei_data, pred, predict.get_modelid(model_path))
+        oracle(predict, args.oracle, args.writedb, args.json):
 
 
 if __name__ == '__main__':

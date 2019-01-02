@@ -84,7 +84,7 @@ class Predict:
 
         self._groupid = uuid.uuid1()
 
-        self.SqlCache = False
+        self.SqlCache = True
 
     @property
     def groupid(self):
@@ -115,13 +115,14 @@ class Predict:
         """
 
         hexdigest = hashlib.md5(sql.encode('utf-8')).hexdigest()
-        path = 'data/'+name+'_'+hexdigest+'.pickle'
-        if self.SqlCache and os.path.isfile(path):
-            df = pd.read_pickle(path)
+        filename = 'data/'+name+'_'+hexdigest+'.joblib'
+        if self.SqlCache and os.path.isfile(filename):
+            df = joblib.load(filename)
         else:
             df = pd.read_sql(sql=sql, con=self.getConnection())
             if self.SqlCache:
-                df.to_pickle(path)
+                os.makedirs(os.path.dirname(filename), exist_ok=True)
+                joblib.dump(df, filename, compress=3)
         return df
 
     def write_predict(self, df, modelid):
@@ -255,14 +256,10 @@ class Predict:
         # https://scikit-learn.org/stable/modules/model_persistence.html
 
         id = uuid.uuid1()
-#        filename = 'model/model-'+str(id)+'.pickle'
         filename = 'model/model-'+str(id)+'.joblib'
         os.makedirs(os.path.dirname(filename), exist_ok=True)
 
         joblib.dump(model, filename, compress=3)
-        #with open(filename, mode='wb') as f:
-        #    pickle.dump(model, f)
-        #
 
         return model, X_test, y_test, filename
 
@@ -392,7 +389,7 @@ def oracular(predict, kaijcd, models, writedb):
         print("kaijcd:", str(kc), "modelid:", modelid, "RMSE:", str(rmse), file=sys.stderr,flush=True)
         yield o
 
-def model(predict, date_range, kaijcd, json):
+def model(predict, date_range, kaijcd, isJson):
         date_range = ['2011-11-01','2018-11-01']
 
         # 学習データからmodelを作る
@@ -409,7 +406,7 @@ def model(predict, date_range, kaijcd, json):
         # 特徴量の重みをplot
         png_path = predict.plot_feature_importances(X, model, predict.get_modelid(model_path))
 
-        if json:
+        if isJson:
             o = {'KaijCd':kaijcd, 'StartDate':date_range[0],'EndDate':date_range[1],'ModelPath':model_path, 'RMSE':rmse, 'feature_importances_png':png_path}
             print(json.dumps(o, indent = 2))
         else:
@@ -420,12 +417,12 @@ def model(predict, date_range, kaijcd, json):
             print("feature importances png: " + png_path)
 
 
-def verification(predict, date_range, model_path, writedb, json):
+def verification(predict, date_range, model_path, writedb, isJson):
     models = predict.get_model(model_path)
 
     o = list(validator(predict, kaijcd, models, date_range, writedb))
 
-    if json:
+    if isJson:
         print(json.dumps(o, indent = 2))
     else:
         for i in o:
@@ -434,12 +431,12 @@ def verification(predict, date_range, model_path, writedb, json):
             print("rmse:       " + str(i['RMSE']))
             print("model path: " + i['ModelPath'])
 
-def oracle(predict, model_path, writedb, json):
+def oracle(predict, model_path, writedb, isJson):
         models = predict.get_model(model_path)
 
         o = list(oracular(predict, kaijcd, models, writedb))
 
-        if json:
+        if isJson:
             print(json.dumps(o, indent = 2))
         else:
             for i in o:
@@ -471,13 +468,13 @@ def main():
 
         date_range = ['2018-11-01','2030-01-01']
 
-        verification(predict, date_range, args.verification, args.writedb, args.json):
+        verification(predict, date_range, args.verification, args.writedb, args.json)
 
     if(args.oracle):
         # 結果の出てないレースを予想する
         # model はファイルから戻す
 
-        oracle(predict, args.oracle, args.writedb, args.json):
+        oracle(predict, args.oracle, args.writedb, args.json)
 
 
 if __name__ == '__main__':

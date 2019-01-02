@@ -210,10 +210,8 @@ see. <https://jupyter-contrib-nbextensions.readthedocs.io/en/latest/install.html
 ##　lightgbmを入れる
 
 ```posh
-conda install sqlalchemy
-
-
 pip install lightgbm
+
 ```
 
 
